@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "ETA Invoice Exporter - Fast",
+  "version": "1.1.0",
+  "description": "Fast export of invoice data from Egyptian eInvoicing portal to Excel",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "https://invoicing.eta.gov.eg/*",
+    "https://*.eta.gov.eg/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "ETA Invoice Exporter - Fast Mode"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://invoicing.eta.gov.eg/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["libs/xlsx.full.min.js", "libs/jspdf.umd.min.js"],
+      "matches": ["https://invoicing.eta.gov.eg/*"]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
