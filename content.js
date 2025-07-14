@@ -1,9 +1,10 @@
-// Enhanced Content Script for ETA Invoice Exporter - Vanilla JavaScript
+// Enhanced Content Script for ETA Invoice Exporter - Fixed Messaging
 class ETAContentScript {
     constructor() {
         this.isInitialized = false;
         this.currentData = null;
         this.performanceMode = 'auto';
+        this.batchSize = 3;
         this.init();
     }
 
@@ -35,8 +36,13 @@ class ETAContentScript {
 
     setupMessageListener() {
         chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            console.log('Content script received message:', message.action);
+            
+            // Handle message asynchronously
             this.handleMessage(message, sender, sendResponse);
-            return true; // Keep message channel open for async responses
+            
+            // Always return true to keep message channel open
+            return true;
         });
     }
 
@@ -64,6 +70,7 @@ class ETAContentScript {
 
                 case 'setPerformanceMode':
                     this.performanceMode = message.mode;
+                    this.setBatchSize();
                     sendResponse({ success: true });
                     break;
 
@@ -73,11 +80,24 @@ class ETAContentScript {
                     break;
 
                 default:
-                    sendResponse({ success: false, error: 'Unknown action' });
+                    sendResponse({ success: false, error: 'Unknown action: ' + message.action });
             }
         } catch (error) {
             console.error('Content script error:', error);
             sendResponse({ success: false, error: error.message });
+        }
+    }
+
+    setBatchSize() {
+        switch (this.performanceMode) {
+            case 'fast':
+                this.batchSize = 5;
+                break;
+            case 'safe':
+                this.batchSize = 1;
+                break;
+            default:
+                this.batchSize = 3;
         }
     }
 
@@ -125,7 +145,7 @@ class ETAContentScript {
                     // Check if new table content was added
                     const hasTable = Array.from(mutation.addedNodes).some(node => 
                         node.nodeType === 1 && (
-                            node.querySelector && node.querySelector('table') ||
+                            (node.querySelector && node.querySelector('table')) ||
                             node.tagName === 'TABLE'
                         )
                     );
@@ -146,230 +166,37 @@ class ETAContentScript {
 
     async getInvoiceData() {
         try {
-            // Try API first for better performance
-            const apiData = await this.tryAPIExtraction();
-            if (apiData && apiData.invoices && apiData.invoices.length > 0) {
-                console.log('Data extracted via API:', apiData.invoices.length, 'invoices');
-                return apiData;
+            console.log('Getting invoice data...');
+            
+            // Wait for table to be fully loaded
+            await this.waitForTable();
+
+            const table = this.findInvoiceTable();
+            if (!table) {
+                throw new Error('لم يتم العثور على جدول الفواتير في الصفحة');
             }
 
-            // Fallback to DOM extraction
-            console.log('API extraction failed, trying DOM extraction...');
-            return await this.extractFromDOM();
+            const invoices = this.extractInvoicesFromTable(table);
+            if (invoices.length === 0) {
+                throw new Error('لم يتم العثور على فواتير في الجدول');
+            }
+
+            const paginationInfo = this.extractPaginationInfo();
+
+            const result = {
+                invoices: invoices,
+                totalCount: paginationInfo.totalCount || invoices.length,
+                currentPage: paginationInfo.currentPage || 1,
+                totalPages: paginationInfo.totalPages || 1
+            };
+
+            console.log('Invoice data extracted:', result);
+            return result;
+
         } catch (error) {
             console.error('Error getting invoice data:', error);
             throw new Error('فشل في استخراج بيانات الفواتير: ' + error.message);
         }
-    }
-
-    async tryAPIExtraction() {
-        try {
-            // Look for API endpoints in network requests or page data
-            const apiEndpoints = this.findAPIEndpoints();
-            
-            for (const endpoint of apiEndpoints) {
-                try {
-                    const response = await this.makeAPIRequest(endpoint);
-                    if (response && response.data) {
-                        return this.processAPIResponse(response);
-                    }
-                } catch (apiError) {
-                    console.log('API endpoint failed:', endpoint, apiError);
-                    continue;
-                }
-            }
-
-            return null;
-        } catch (error) {
-            console.log('API extraction failed:', error);
-            return null;
-        }
-    }
-
-    findAPIEndpoints() {
-        const endpoints = [];
-        
-        // Common ETA API patterns
-        const baseUrl = window.location.origin;
-        const commonPaths = [
-            '/api/v1/documents/search',
-            '/api/documents/list',
-            '/documents/api/search',
-            '/api/invoices/search'
-        ];
-
-        commonPaths.forEach(path => {
-            endpoints.push(baseUrl + path);
-        });
-
-        // Look for endpoints in page scripts
-        const scripts = document.querySelectorAll('script');
-        scripts.forEach(script => {
-            if (script.textContent) {
-                const apiMatches = script.textContent.match(/['"](\/api\/[^'"]+)['"]/g);
-                if (apiMatches) {
-                    apiMatches.forEach(match => {
-                        const cleanPath = match.replace(/['"]/g, '');
-                        if (cleanPath.includes('document') || cleanPath.includes('invoice')) {
-                            endpoints.push(baseUrl + cleanPath);
-                        }
-                    });
-                }
-            }
-        });
-
-        return [...new Set(endpoints)]; // Remove duplicates
-    }
-
-    async makeAPIRequest(endpoint) {
-        const headers = {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
-        };
-
-        // Try to get auth token from page
-        const authToken = this.extractAuthToken();
-        if (authToken) {
-            headers['Authorization'] = `Bearer ${authToken}`;
-        }
-
-        // Get current page parameters
-        const urlParams = new URLSearchParams(window.location.search);
-        const requestData = {
-            page: parseInt(urlParams.get('page')) || 1,
-            size: parseInt(urlParams.get('size')) || 10,
-            sortBy: urlParams.get('sortBy') || 'issueDate',
-            sortDirection: urlParams.get('sortDirection') || 'desc'
-        };
-
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify(requestData)
-        });
-
-        if (response.ok) {
-            return await response.json();
-        }
-
-        throw new Error(`API request failed: ${response.status}`);
-    }
-
-    extractAuthToken() {
-        // Try multiple methods to get auth token
-        const methods = [
-            () => localStorage.getItem('authToken'),
-            () => localStorage.getItem('token'),
-            () => sessionStorage.getItem('authToken'),
-            () => sessionStorage.getItem('token'),
-            () => {
-                const cookies = document.cookie.split(';');
-                for (const cookie of cookies) {
-                    const [name, value] = cookie.trim().split('=');
-                    if (name.includes('token') || name.includes('auth')) {
-                        return value;
-                    }
-                }
-                return null;
-            }
-        ];
-
-        for (const method of methods) {
-            try {
-                const token = method();
-                if (token && token.length > 10) {
-                    return token;
-                }
-            } catch (error) {
-                continue;
-            }
-        }
-
-        return null;
-    }
-
-    processAPIResponse(response) {
-        const invoices = [];
-        let totalCount = 0;
-        let currentPage = 1;
-        let totalPages = 1;
-
-        // Handle different API response formats
-        if (response.data && Array.isArray(response.data)) {
-            response.data.forEach(item => {
-                invoices.push(this.normalizeInvoiceData(item));
-            });
-        } else if (response.content && Array.isArray(response.content)) {
-            response.content.forEach(item => {
-                invoices.push(this.normalizeInvoiceData(item));
-            });
-        } else if (response.items && Array.isArray(response.items)) {
-            response.items.forEach(item => {
-                invoices.push(this.normalizeInvoiceData(item));
-            });
-        }
-
-        // Extract pagination info
-        totalCount = response.totalElements || response.total || response.totalCount || invoices.length;
-        currentPage = (response.number || response.page || response.currentPage || 1) + (response.number !== undefined ? 1 : 0);
-        totalPages = response.totalPages || Math.ceil(totalCount / (response.size || 10));
-
-        return {
-            invoices: invoices,
-            totalCount: totalCount,
-            currentPage: currentPage,
-            totalPages: totalPages
-        };
-    }
-
-    normalizeInvoiceData(item) {
-        return {
-            serialNumber: item.serialNumber || item.id || '',
-            documentType: item.documentType || item.type || 'فاتورة',
-            documentVersion: item.documentVersion || item.version || '1.0',
-            status: item.status || item.documentStatus || '',
-            issueDate: this.formatDate(item.issueDate || item.dateTimeIssued),
-            submissionDate: this.formatDate(item.submissionDate || item.dateTimeReceived),
-            invoiceCurrency: item.invoiceCurrency || item.currency || 'EGP',
-            invoiceValue: this.formatAmount(item.invoiceValue || item.totalSalesAmount),
-            vatAmount: this.formatAmount(item.vatAmount || item.totalTaxAmount),
-            taxDiscount: this.formatAmount(item.taxDiscount || item.totalDiscountAmount || '0'),
-            totalAmount: this.formatAmount(item.totalAmount || item.totalAmountEGP),
-            internalNumber: item.internalNumber || item.internalId || '',
-            electronicNumber: item.electronicNumber || item.uuid || item.submissionUUID || '',
-            sellerTaxNumber: item.sellerTaxNumber || (item.issuer && item.issuer.id) || '',
-            sellerName: item.sellerName || (item.issuer && item.issuer.name) || '',
-            sellerAddress: item.sellerAddress || (item.issuer && item.issuer.address) || '',
-            buyerTaxNumber: item.buyerTaxNumber || (item.receiver && item.receiver.id) || '',
-            buyerName: item.buyerName || (item.receiver && item.receiver.name) || '',
-            buyerAddress: item.buyerAddress || (item.receiver && item.receiver.address) || '',
-            purchaseOrderRef: item.purchaseOrderRef || item.purchaseOrderReference || '',
-            purchaseOrderDesc: item.purchaseOrderDesc || item.purchaseOrderDescription || '',
-            salesOrderRef: item.salesOrderRef || item.salesOrderReference || '',
-            electronicSignature: item.electronicSignature || 'موقع إلكترونياً',
-            foodDrugGuide: item.foodDrugGuide || '',
-            externalLink: item.externalLink || ''
-        };
-    }
-
-    async extractFromDOM() {
-        // Wait for table to be fully loaded
-        await this.waitForTable();
-
-        const table = this.findInvoiceTable();
-        if (!table) {
-            throw new Error('لم يتم العثور على جدول الفواتير في الصفحة');
-        }
-
-        const invoices = this.extractInvoicesFromTable(table);
-        const paginationInfo = this.extractPaginationInfo();
-
-        return {
-            invoices: invoices,
-            totalCount: paginationInfo.totalCount,
-            currentPage: paginationInfo.currentPage,
-            totalPages: paginationInfo.totalPages
-        };
     }
 
     async waitForTable(maxWait = 10000) {
@@ -377,7 +204,7 @@ class ETAContentScript {
         
         while (Date.now() - startTime < maxWait) {
             const table = this.findInvoiceTable();
-            if (table && table.querySelectorAll('tbody tr').length > 0) {
+            if (table && table.querySelectorAll('tbody tr, tr').length > 1) {
                 // Wait a bit more for dynamic content
                 await new Promise(resolve => setTimeout(resolve, 500));
                 return table;
@@ -391,76 +218,75 @@ class ETAContentScript {
     findInvoiceTable() {
         // Multiple strategies to find the invoice table
         const selectors = [
-            'table[class*="invoice"]',
-            'table[class*="document"]',
-            'table[id*="invoice"]',
-            'table[id*="document"]',
+            'table[class*="table"]',
+            'table[class*="data"]',
+            'table[id*="table"]',
             '.table-responsive table',
             '.data-table table',
-            'table tbody tr td:first-child', // Look for tables with serial numbers
             'table'
         ];
 
         for (const selector of selectors) {
-            const elements = document.querySelectorAll(selector);
-            for (const element of elements) {
-                const table = element.tagName === 'TABLE' ? element : element.closest('table');
-                if (table && this.isInvoiceTable(table)) {
+            const tables = document.querySelectorAll(selector);
+            for (const table of tables) {
+                if (this.isInvoiceTable(table)) {
+                    console.log('Found invoice table:', table);
                     return table;
                 }
             }
         }
 
-        // Fallback: find table with most rows
+        // Fallback: find table with most rows that looks like invoice data
         const allTables = document.querySelectorAll('table');
         let bestTable = null;
         let maxRows = 0;
 
         allTables.forEach(table => {
             const rows = table.querySelectorAll('tbody tr, tr');
-            if (rows.length > maxRows && this.looksLikeInvoiceTable(table)) {
+            if (rows.length > maxRows && rows.length > 1) {
                 maxRows = rows.length;
                 bestTable = table;
             }
         });
 
+        console.log('Best table found:', bestTable, 'with', maxRows, 'rows');
         return bestTable;
     }
 
     isInvoiceTable(table) {
         const text = table.textContent.toLowerCase();
         const invoiceKeywords = [
-            'فاتورة', 'invoice', 'مستند', 'document', 'رقم إلكتروني', 'electronic',
-            'ضريبة', 'tax', 'قيمة', 'amount', 'تاريخ', 'date', 'حالة', 'status'
+            'فاتورة', 'invoice', 'مستند', 'document', 'رقم', 'number',
+            'تاريخ', 'date', 'حالة', 'status', 'قيمة', 'amount', 'مبلغ'
         ];
 
-        return invoiceKeywords.some(keyword => text.includes(keyword));
-    }
+        const hasKeywords = invoiceKeywords.some(keyword => text.includes(keyword));
+        const hasEnoughColumns = table.querySelectorAll('th, thead td').length >= 5;
+        const hasEnoughRows = table.querySelectorAll('tbody tr, tr').length > 1;
 
-    looksLikeInvoiceTable(table) {
-        const headers = table.querySelectorAll('th, thead td');
-        if (headers.length < 5) return false; // Invoice tables usually have many columns
-
-        const headerText = Array.from(headers).map(h => h.textContent.toLowerCase()).join(' ');
-        const invoiceIndicators = ['رقم', 'تاريخ', 'قيمة', 'حالة', 'نوع'];
-        
-        return invoiceIndicators.filter(indicator => headerText.includes(indicator)).length >= 3;
+        return hasKeywords && hasEnoughColumns && hasEnoughRows;
     }
 
     extractInvoicesFromTable(table) {
         const invoices = [];
-        const rows = table.querySelectorAll('tbody tr, tr:not(:first-child)');
+        const rows = table.querySelectorAll('tbody tr');
+        
+        // If no tbody, try all rows except first (header)
+        const dataRows = rows.length > 0 ? rows : Array.from(table.querySelectorAll('tr')).slice(1);
 
-        rows.forEach((row, index) => {
+        console.log('Extracting from', dataRows.length, 'rows');
+
+        dataRows.forEach((row, index) => {
             const cells = row.querySelectorAll('td, th');
-            if (cells.length < 5) return; // Skip rows with too few cells
+            if (cells.length < 3) return; // Skip rows with too few cells
 
             const invoice = this.extractInvoiceFromRow(cells, index + 1);
-            if (invoice.electronicNumber || invoice.internalNumber) {
+            if (invoice && (invoice.electronicNumber || invoice.internalNumber || invoice.serialNumber)) {
                 invoices.push(invoice);
             }
         });
 
+        console.log('Extracted', invoices.length, 'invoices');
         return invoices;
     }
 
@@ -468,6 +294,7 @@ class ETAContentScript {
         const getText = (index) => {
             if (index >= 0 && index < cells.length) {
                 const cell = cells[index];
+                // Check for buttons or links first
                 const button = cell.querySelector('button, a');
                 if (button && button.textContent.trim()) {
                     return button.textContent.trim();
@@ -477,79 +304,59 @@ class ETAContentScript {
             return '';
         };
 
-        // Try to detect column positions based on content patterns
-        const columnMap = this.detectColumnPositions(cells);
-
-        return {
+        // Extract data from common positions
+        const invoice = {
             serialNumber: serialNumber.toString(),
-            documentType: getText(columnMap.documentType) || 'فاتورة',
-            documentVersion: getText(columnMap.documentVersion) || '1.0',
-            status: getText(columnMap.status),
-            issueDate: this.formatDate(getText(columnMap.issueDate)),
-            submissionDate: this.formatDate(getText(columnMap.submissionDate)),
-            invoiceCurrency: getText(columnMap.invoiceCurrency) || 'EGP',
-            invoiceValue: this.formatAmount(getText(columnMap.invoiceValue)),
-            vatAmount: this.formatAmount(getText(columnMap.vatAmount)),
-            taxDiscount: this.formatAmount(getText(columnMap.taxDiscount)) || '0',
-            totalAmount: this.formatAmount(getText(columnMap.totalAmount)),
-            internalNumber: getText(columnMap.internalNumber),
-            electronicNumber: getText(columnMap.electronicNumber),
-            sellerTaxNumber: getText(columnMap.sellerTaxNumber),
-            sellerName: getText(columnMap.sellerName),
-            sellerAddress: getText(columnMap.sellerAddress),
-            buyerTaxNumber: getText(columnMap.buyerTaxNumber),
-            buyerName: getText(columnMap.buyerName),
-            buyerAddress: getText(columnMap.buyerAddress),
-            purchaseOrderRef: getText(columnMap.purchaseOrderRef),
-            purchaseOrderDesc: getText(columnMap.purchaseOrderDesc),
-            salesOrderRef: getText(columnMap.salesOrderRef),
+            documentType: getText(2) || 'فاتورة',
+            documentVersion: getText(3) || '1.0',
+            status: getText(4) || '',
+            issueDate: this.formatDate(getText(5)),
+            submissionDate: this.formatDate(getText(6)),
+            invoiceCurrency: getText(7) || 'EGP',
+            invoiceValue: this.formatAmount(getText(8)),
+            vatAmount: this.formatAmount(getText(9)),
+            taxDiscount: this.formatAmount(getText(10)) || '0',
+            totalAmount: this.formatAmount(getText(11)),
+            internalNumber: getText(12),
+            electronicNumber: getText(13),
+            sellerTaxNumber: getText(14),
+            sellerName: getText(15),
+            sellerAddress: getText(16),
+            buyerTaxNumber: getText(17),
+            buyerName: getText(18),
+            buyerAddress: getText(19),
+            purchaseOrderRef: getText(20),
+            purchaseOrderDesc: getText(21),
+            salesOrderRef: getText(22),
             electronicSignature: 'موقع إلكترونياً',
-            foodDrugGuide: getText(columnMap.foodDrugGuide),
-            externalLink: getText(columnMap.externalLink)
+            foodDrugGuide: getText(24),
+            externalLink: getText(25)
         };
-    }
 
-    detectColumnPositions(cells) {
-        const positions = {};
-        
-        cells.forEach((cell, index) => {
-            const text = cell.textContent.toLowerCase().trim();
-            const hasButton = cell.querySelector('button, a') !== null;
-            
-            // Detect patterns
-            if (hasButton && text.includes('عرض')) {
-                positions.detailsButton = index;
-            } else if (text.match(/^\d{4}-\d{2}-\d{2}/) || text.match(/\d{1,2}\/\d{1,2}\/\d{4}/)) {
-                if (!positions.issueDate) positions.issueDate = index;
-                else positions.submissionDate = index;
-            } else if (text.match(/[\d,]+\.\d{2}/) || text.match(/[\d,٬]+/)) {
-                if (!positions.invoiceValue) positions.invoiceValue = index;
-                else if (!positions.vatAmount) positions.vatAmount = index;
-                else if (!positions.totalAmount) positions.totalAmount = index;
-            } else if (text.match(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i)) {
-                positions.electronicNumber = index;
-            } else if (text.match(/^\d+$/)) {
-                if (!positions.internalNumber) positions.internalNumber = index;
-            } else if (text.includes('فاتورة') || text.includes('invoice')) {
-                positions.documentType = index;
-            } else if (text.includes('مقبول') || text.includes('مرفوض') || text.includes('valid') || text.includes('invalid')) {
-                positions.status = index;
+        // Try to find key fields if not in expected positions
+        if (!invoice.electronicNumber && !invoice.internalNumber) {
+            for (let i = 0; i < cells.length; i++) {
+                const text = getText(i);
+                // Look for UUID pattern (electronic number)
+                if (text.match(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i)) {
+                    invoice.electronicNumber = text;
+                }
+                // Look for internal number (usually numeric)
+                else if (text.match(/^\d+$/) && text.length > 3) {
+                    if (!invoice.internalNumber) {
+                        invoice.internalNumber = text;
+                    }
+                }
+                // Look for amounts
+                else if (text.match(/[\d,]+\.\d{2}/) || text.match(/[\d,٬]+/)) {
+                    if (!invoice.totalAmount && text.includes('.')) {
+                        invoice.totalAmount = this.formatAmount(text);
+                    }
+                }
             }
-        });
+        }
 
-        // Fill in missing positions with best guesses
-        const totalCells = cells.length;
-        if (!positions.serialNumber) positions.serialNumber = 0;
-        if (!positions.detailsButton) positions.detailsButton = 1;
-        if (!positions.documentType) positions.documentType = 2;
-        if (!positions.status) positions.status = 4;
-        if (!positions.issueDate) positions.issueDate = 5;
-        if (!positions.invoiceValue) positions.invoiceValue = 8;
-        if (!positions.totalAmount) positions.totalAmount = 11;
-        if (!positions.internalNumber) positions.internalNumber = 12;
-        if (!positions.electronicNumber) positions.electronicNumber = 13;
-
-        return positions;
+        return invoice;
     }
 
     extractPaginationInfo() {
@@ -558,28 +365,45 @@ class ETAContentScript {
         let totalPages = 1;
 
         // Strategy 1: Look for pagination text patterns
-        const paginationSelectors = [
-            '.pagination-info',
-            '.page-info',
-            '.results-info',
-            '[class*="pagination"]',
-            '[class*="page"]'
+        const bodyText = document.body.textContent;
+        
+        // Common Arabic patterns
+        const patterns = [
+            /(\d+)\s*-\s*(\d+)\s*من\s*(\d+)/,  // "1-10 من 100"
+            /صفحة\s*(\d+)\s*من\s*(\d+)/,        // "صفحة 1 من 10"
+            /إجمالي\s*(\d+)/,                   // "إجمالي 100"
+            /المجموع\s*(\d+)/,                  // "المجموع 100"
+            /(\d+)\s*to\s*(\d+)\s*of\s*(\d+)/i, // "1 to 10 of 100"
+            /page\s*(\d+)\s*of\s*(\d+)/i,       // "page 1 of 10"
+            /total\s*(\d+)/i                    // "total 100"
         ];
 
-        for (const selector of paginationSelectors) {
-            const elements = document.querySelectorAll(selector);
-            for (const element of elements) {
-                const text = element.textContent;
-                const info = this.parsePaginationText(text);
-                if (info.totalCount > 0) {
-                    return info;
+        for (const pattern of patterns) {
+            const match = bodyText.match(pattern);
+            if (match) {
+                if (match.length === 4) {
+                    // Range pattern (start-end of total)
+                    totalCount = parseInt(match[3]);
+                    const pageSize = parseInt(match[2]) - parseInt(match[1]) + 1;
+                    currentPage = Math.ceil(parseInt(match[1]) / pageSize);
+                    totalPages = Math.ceil(totalCount / pageSize);
+                    break;
+                } else if (match.length === 3) {
+                    // Page pattern (page X of Y)
+                    currentPage = parseInt(match[1]);
+                    totalPages = parseInt(match[2]);
+                    break;
+                } else if (match.length === 2) {
+                    // Total pattern
+                    totalCount = parseInt(match[1]);
+                    break;
                 }
             }
         }
 
         // Strategy 2: Look for pagination controls
         const pageButtons = document.querySelectorAll('.page-link, .page-item, [class*="page"]');
-        if (pageButtons.length > 0) {
+        if (pageButtons.length > 0 && totalPages === 1) {
             const pageNumbers = [];
             pageButtons.forEach(button => {
                 const num = parseInt(button.textContent.trim());
@@ -602,79 +426,27 @@ class ETAContentScript {
         // Strategy 3: Look in URL parameters
         const urlParams = new URLSearchParams(window.location.search);
         const urlPage = parseInt(urlParams.get('page')) || parseInt(urlParams.get('p'));
-        if (urlPage) {
+        if (urlPage && currentPage === 1) {
             currentPage = urlPage;
         }
 
-        // Strategy 4: Estimate from table size and common page sizes
-        const table = this.findInvoiceTable();
-        if (table) {
-            const rows = table.querySelectorAll('tbody tr, tr:not(:first-child)');
-            const currentPageCount = rows.length;
-            
-            // Common page sizes
-            const commonSizes = [10, 20, 25, 50, 100];
-            const likelyPageSize = commonSizes.find(size => currentPageCount <= size) || currentPageCount;
-            
-            // Look for total count indicators
-            const totalText = document.body.textContent;
-            const totalMatches = totalText.match(/(\d+)\s*(?:من|of|total|إجمالي)/gi);
-            if (totalMatches) {
-                const numbers = totalMatches.map(match => parseInt(match.match(/\d+/)[0]));
-                totalCount = Math.max(...numbers);
-                totalPages = Math.ceil(totalCount / likelyPageSize);
-            } else {
-                // Estimate based on current page size
-                totalCount = currentPageCount * (totalPages || 1);
+        // Strategy 4: Estimate from current table
+        if (totalCount === 0) {
+            const table = this.findInvoiceTable();
+            if (table) {
+                const rows = table.querySelectorAll('tbody tr, tr:not(:first-child)');
+                totalCount = rows.length * (totalPages || 1);
             }
         }
 
-        return {
+        const result = {
             totalCount: Math.max(totalCount, 0),
             currentPage: Math.max(currentPage, 1),
             totalPages: Math.max(totalPages, 1)
         };
-    }
 
-    parsePaginationText(text) {
-        const patterns = [
-            /(\d+)\s*-\s*(\d+)\s*من\s*(\d+)/,  // "1-10 من 100"
-            /(\d+)\s*to\s*(\d+)\s*of\s*(\d+)/i, // "1 to 10 of 100"
-            /صفحة\s*(\d+)\s*من\s*(\d+)/,        // "صفحة 1 من 10"
-            /page\s*(\d+)\s*of\s*(\d+)/i,       // "page 1 of 10"
-            /إجمالي\s*(\d+)/,                   // "إجمالي 100"
-            /total\s*(\d+)/i                    // "total 100"
-        ];
-
-        for (const pattern of patterns) {
-            const match = text.match(pattern);
-            if (match) {
-                if (match.length === 4) {
-                    // Range pattern (start-end of total)
-                    return {
-                        totalCount: parseInt(match[3]),
-                        currentPage: Math.ceil(parseInt(match[1]) / (parseInt(match[2]) - parseInt(match[1]) + 1)),
-                        totalPages: Math.ceil(parseInt(match[3]) / (parseInt(match[2]) - parseInt(match[1]) + 1))
-                    };
-                } else if (match.length === 3) {
-                    // Page pattern (page X of Y)
-                    return {
-                        totalCount: 0, // Will be calculated later
-                        currentPage: parseInt(match[1]),
-                        totalPages: parseInt(match[2])
-                    };
-                } else if (match.length === 2) {
-                    // Total pattern
-                    return {
-                        totalCount: parseInt(match[1]),
-                        currentPage: 1,
-                        totalPages: 1
-                    };
-                }
-            }
-        }
-
-        return { totalCount: 0, currentPage: 1, totalPages: 1 };
+        console.log('Pagination info:', result);
+        return result;
     }
 
     async getAllPagesData(options = {}) {
@@ -684,22 +456,27 @@ class ETAContentScript {
         
         console.log(`Starting to load ${totalPages} pages...`);
 
-        // Determine batch size based on performance mode
-        let batchSize = 3;
-        if (this.performanceMode === 'fast') {
-            batchSize = 5;
-        } else if (this.performanceMode === 'safe') {
-            batchSize = 1;
+        // Load current page first
+        const currentData = await this.getInvoiceData();
+        allInvoices.push(...currentData.invoices);
+
+        // If only one page, return current data
+        if (totalPages <= 1) {
+            return allInvoices;
         }
 
-        // Load pages in batches
-        for (let i = 1; i <= totalPages; i += batchSize) {
+        // Load remaining pages in batches
+        for (let i = 1; i <= totalPages; i += this.batchSize) {
+            if (i === paginationInfo.currentPage) continue; // Skip current page
+
             const batch = [];
-            const endPage = Math.min(i + batchSize - 1, totalPages);
+            const endPage = Math.min(i + this.batchSize - 1, totalPages);
             
             // Create batch of page load promises
             for (let page = i; page <= endPage; page++) {
-                batch.push(this.loadPageData(page));
+                if (page !== paginationInfo.currentPage) {
+                    batch.push(this.loadPageData(page));
+                }
             }
 
             // Send progress update
@@ -720,9 +497,9 @@ class ETAContentScript {
                     }
                 });
 
-                // Small delay between batches to prevent overwhelming the server
+                // Small delay between batches
                 if (endPage < totalPages) {
-                    await new Promise(resolve => setTimeout(resolve, 200));
+                    await new Promise(resolve => setTimeout(resolve, 300));
                 }
             } catch (error) {
                 console.error(`Error loading batch ${i}-${endPage}:`, error);
@@ -736,13 +513,6 @@ class ETAContentScript {
 
     async loadPageData(pageNumber) {
         try {
-            // If we're already on the target page, extract data directly
-            const currentPageInfo = this.extractPaginationInfo();
-            if (currentPageInfo.currentPage === pageNumber) {
-                const currentData = await this.getInvoiceData();
-                return currentData.invoices;
-            }
-
             // Navigate to the target page
             await this.navigateToPage(pageNumber);
             
@@ -761,14 +531,23 @@ class ETAContentScript {
 
     async navigateToPage(pageNumber) {
         // Strategy 1: Click pagination button
-        const pageButton = document.querySelector(`[data-page="${pageNumber}"], .page-link[href*="page=${pageNumber}"]`);
-        if (pageButton) {
-            pageButton.click();
-            return;
+        const pageSelectors = [
+            `a[href*="page=${pageNumber}"]`,
+            `button[data-page="${pageNumber}"]`,
+            `.page-link:contains("${pageNumber}")`,
+            `.page-item a:contains("${pageNumber}")`
+        ];
+
+        for (const selector of pageSelectors) {
+            const button = document.querySelector(selector);
+            if (button) {
+                button.click();
+                return;
+            }
         }
 
         // Strategy 2: Look for numbered page buttons
-        const pageButtons = document.querySelectorAll('.page-link, .page-item a, [class*="page"] a');
+        const pageButtons = document.querySelectorAll('.page-link, .page-item a, [class*="page"] a, button');
         for (const button of pageButtons) {
             if (button.textContent.trim() === pageNumber.toString()) {
                 button.click();
@@ -779,13 +558,12 @@ class ETAContentScript {
         // Strategy 3: Modify URL parameters
         const url = new URL(window.location);
         url.searchParams.set('page', pageNumber);
-        window.history.pushState({}, '', url);
-        window.location.reload();
+        window.location.href = url.toString();
     }
 
     async waitForPageLoad() {
         // Wait for navigation to complete
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 1500));
         
         // Wait for table to be updated
         await this.waitForTable();
@@ -799,6 +577,8 @@ class ETAContentScript {
             chrome.runtime.sendMessage({
                 action: 'progressUpdate',
                 progress: progress
+            }).catch(() => {
+                // Ignore messaging errors during progress updates
             });
         } catch (error) {
             console.log('Could not send progress update:', error);
@@ -813,8 +593,8 @@ class ETAContentScript {
                 return await this.extractDetailsFromModal(detailsButton);
             }
 
-            // Fallback: try API call for details
-            return await this.getDetailsFromAPI(invoiceId);
+            // Return empty array if no details found
+            return [];
         } catch (error) {
             console.error('Error getting invoice details:', error);
             return [];
@@ -826,7 +606,7 @@ class ETAContentScript {
         const rows = document.querySelectorAll('tr');
         for (const row of rows) {
             if (row.textContent.includes(invoiceId)) {
-                const button = row.querySelector('button[onclick*="details"], button[onclick*="view"], a[href*="details"]');
+                const button = row.querySelector('button, a[href*="details"], a[href*="view"]');
                 if (button) return button;
             }
         }
@@ -837,7 +617,7 @@ class ETAContentScript {
         // Click the button and wait for modal/details to load
         button.click();
         
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 1500));
         
         // Look for details table or modal
         const detailsContainer = document.querySelector('.modal-body, .details-container, [class*="detail"]');
@@ -872,50 +652,13 @@ class ETAContentScript {
         return items;
     }
 
-    async getDetailsFromAPI(invoiceId) {
-        // Try to make API call for invoice details
-        const apiEndpoints = [
-            `/api/v1/documents/${invoiceId}/details`,
-            `/api/documents/${invoiceId}/items`,
-            `/documents/api/${invoiceId}/details`
-        ];
-
-        for (const endpoint of apiEndpoints) {
-            try {
-                const response = await this.makeAPIRequest(window.location.origin + endpoint);
-                if (response && response.data) {
-                    return response.data.map(item => this.normalizeItemData(item));
-                }
-            } catch (error) {
-                continue;
-            }
-        }
-
-        return [];
-    }
-
-    normalizeItemData(item) {
-        return {
-            itemCode: item.itemCode || item.code || '',
-            description: item.description || item.name || '',
-            unitCode: item.unitCode || 'EA',
-            unitName: item.unitName || 'قطعة',
-            quantity: item.quantity || '1',
-            unitPrice: this.formatAmount(item.unitPrice || item.price),
-            totalValue: this.formatAmount(item.totalValue || item.total),
-            taxAmount: this.formatAmount(item.taxAmount || '0'),
-            vatAmount: this.formatAmount(item.vatAmount || item.vat),
-            totalWithVat: this.formatAmount(item.totalWithVat || item.totalValue)
-        };
-    }
-
     formatDate(dateString) {
         if (!dateString) return '';
         
         try {
             const date = new Date(dateString);
             if (isNaN(date.getTime())) {
-                // Try to parse Arabic/different formats
+                // Return as-is if can't parse
                 return dateString.trim();
             }
             
@@ -944,5 +687,6 @@ class ETAContentScript {
 
 // Initialize the content script
 if (typeof window !== 'undefined' && window.location.href.includes('invoicing.eta.gov.eg')) {
+    console.log('Initializing ETA Content Script...');
     new ETAContentScript();
 }

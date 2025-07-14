@@ -338,34 +338,62 @@ class ETAInvoiceExporter {
   }
   
   async sendMessageWithRetry(tabId, message, maxRetries = 3) {
+    let lastError = null;
+    
     for (let i = 0; i < maxRetries; i++) {
       try {
-        // Ensure content script is loaded before each attempt
-        if (i > 0) {
-          await this.ensureContentScriptLoaded(tabId);
-        }
+        console.log(`Sending message attempt ${i + 1}:`, message.action);
         
-        const response = await chrome.tabs.sendMessage(tabId, message);
+        // Create a promise that resolves/rejects based on the response
+        const response = await new Promise((resolve, reject) => {
+          chrome.tabs.sendMessage(tabId, message, (response) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else if (response) {
+              resolve(response);
+            } else {
+              reject(new Error('No response received'));
+            }
+          });
+        });
         
-        if (response) {
+        if (response && response.success !== false) {
+          console.log(`Message successful on attempt ${i + 1}`);
           return response;
-        } else {
-          throw new Error('Empty response from content script');
         }
+        
+        throw new Error(response.error || 'Unknown error from content script');
+        
       } catch (error) {
-        console.log(`Message attempt ${i + 1} failed:`, error);
+        console.log(`Message attempt ${i + 1} failed:`, error.message);
+        lastError = error;
         
         if (i === maxRetries - 1) {
-          if (error.message.includes('Could not establish connection')) {
-            throw new Error('فشل في الاتصال مع الصفحة. يرجى إعادة تحميل الصفحة وإعادة فتح الإضافة.');
+          break; // Exit retry loop on last attempt
+        }
+        
+        // Re-inject content script on connection errors
+        if (error.message.includes('Could not establish connection') || 
+            error.message.includes('message channel closed')) {
+          try {
+            console.log('Re-injecting content script...');
+            await this.ensureContentScriptLoaded(tabId);
+          } catch (injectError) {
+            console.error('Failed to re-inject content script:', injectError);
           }
-          throw error;
         }
         
         // Wait before retry
-        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+        await new Promise(resolve => setTimeout(resolve, 500 * (i + 1)));
       }
     }
+    
+    // If we get here, all retries failed
+    if (lastError && lastError.message.includes('Could not establish connection')) {
+      throw new Error('فشل في الاتصال مع الصفحة. يرجى إعادة تحميل الصفحة وإعادة فتح الإضافة.');
+    }
+    
+    throw lastError || new Error('فشل في إرسال الرسالة بعد عدة محاولات');
   }
   
   updateUI() {
