@@ -242,11 +242,34 @@
     
     .count-info {
       background: #f0f0f0;
-      padding: 8px;
-      border-radius: 4px;
-      font-size: 12px;
+      padding: 12px;
+      border-radius: 6px;
+      font-size: 13px;
       text-align: center;
-      margin-bottom: 10px;
+      margin-bottom: 15px;
+      border: 1px solid #ddd;
+    }
+    
+    .count-details {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 8px;
+      font-size: 11px;
+    }
+    
+    .count-item {
+      background: white;
+      padding: 6px;
+      border-radius: 4px;
+      text-align: center;
+      border: 1px solid #e0e0e0;
+    }
+    
+    .count-item strong {
+      display: block;
+      color: #1976d2;
+      font-size: 14px;
     }
     
     .disclaimer {
@@ -277,17 +300,118 @@
       font-weight: bold;
       color: #495057;
     }
+
+    .progress-container {
+      margin-top: 15px;
+      padding: 15px;
+      background: #f8f9fa;
+      border-radius: 8px;
+      border: 1px solid #e9ecef;
+      display: none;
+    }
+
+    .progress-bar {
+      width: 100%;
+      height: 20px;
+      background: #e9ecef;
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 10px;
+      position: relative;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #28a745, #20c997);
+      border-radius: 10px;
+      width: 0%;
+      transition: width 0.3s ease;
+      position: relative;
+    }
+
+    .progress-text {
+      text-align: center;
+      font-size: 14px;
+      color: #495057;
+      font-weight: 500;
+    }
+
+    .performance-section {
+      background: #e8f5e8;
+      border: 1px solid #4caf50;
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 15px;
+    }
+
+    .performance-section .section-title {
+      color: #2e7d32;
+      border-bottom-color: #4caf50;
+    }
+
+    .performance-option {
+      background: #f1f8e9;
+      border: 1px solid #8bc34a;
+      border-radius: 4px;
+      padding: 6px;
+      margin-bottom: 4px;
+    }
+
+    .performance-option label {
+      font-weight: 500;
+      color: #33691e;
+    }
+
+    .performance-option input[type="radio"] {
+      accent-color: #4caf50;
+    }
   </style>
 </head>
 <body>
   <div class="header">
-    <h1>مصدر فواتير الضرائب المصرية</h1>
-    <p>تصدير بيانات الفواتير إلى Excel - جميع الأعمدة</p>
+    <h1>مصدر فواتير الضرائب المصرية المحسن</h1>
+    <p>تصدير بيانات الفواتير إلى Excel - نظام شامل ومحسن</p>
   </div>
   
   <div class="content">
     <div class="count-info" id="countInfo">
       جاري فحص البيانات...
+      <div class="count-details" id="countDetails" style="display: none;">
+        <div class="count-item">
+          <strong id="currentPageCount">0</strong>
+          <span>الصفحة الحالية</span>
+        </div>
+        <div class="count-item">
+          <strong id="totalInvoicesCount">0</strong>
+          <span>إجمالي الفواتير</span>
+        </div>
+        <div class="count-item">
+          <strong id="currentPageNumber">1</strong>
+          <span>الصفحة الحالية</span>
+        </div>
+        <div class="count-item">
+          <strong id="totalPagesCount">1</strong>
+          <span>إجمالي الصفحات</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section performance-section">
+      <div class="section-title">وضع الأداء المحسن:</div>
+      <div class="checkbox-group">
+        <div class="checkbox-item performance-option">
+          <input type="radio" id="mode-auto" name="performance-mode" value="auto" checked>
+          <label for="mode-auto">⚡ تلقائي - سريع وآمن (موصى به)</label>
+        </div>
+        <div class="checkbox-item performance-option">
+          <input type="radio" id="mode-fast" name="performance-mode" value="fast">
+          <label for="mode-fast">🚀 سريع جداً - قد يفشل أحياناً</label>
+        </div>
+        <div class="checkbox-item performance-option">
+          <input type="radio" id="mode-safe" name="performance-mode" value="safe">
+          <label for="mode-safe">🛡️ آمن - بطيء (الطريقة القديمة)</label>
+        </div>
+      </div>
     </div>
     
     <div class="section">
@@ -434,7 +558,7 @@
     </div>
     
     <div class="section">
-      <div class="section-title">خيارات التصدير:</div>
+      <div class="section-title">خيارات التصدير المحسنة:</div>
       <div class="checkbox-group">
         <div class="checkbox-item special-option">
           <input type="checkbox" id="option-download-details">
@@ -446,7 +570,7 @@
         </div>
         <div class="checkbox-item download-all-option">
           <input type="checkbox" id="option-download-all">
-          <label for="option-download-all">تحميل جميع الصفحات - <span id="totalCountText">299</span> فاتورة (قد يستغرق وقتاً أطول)</label>
+          <label for="option-download-all">⚡ تحميل جميع الصفحات بسرعة محسنة - <span id="totalCountText">0</span> فاتورة (<span id="totalPagesText">0</span> صفحة)</label>
         </div>
       </div>
     </div>

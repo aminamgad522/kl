@@ -217,13 +217,13 @@ class ETAInvoiceExporter {
   }
   
   showMultiPageWarning() {
-    const warningText = `⚡ تحسين جديد: سيتم تحميل جميع الصفحات (${this.totalPages} صفحة) بسرعة عالية!`;
+    const warningText = `⚡ النظام المحسن: سيتم تحميل جميع الصفحات (${this.totalPages} صفحة) بسرعة وكفاءة عالية!`;
     this.showStatus(warningText, 'loading');
     
     setTimeout(() => {
       this.elements.status.textContent = '';
       this.elements.status.className = 'status';
-    }, 3000);
+    }, 4000);
   }
   
   async checkCurrentPage() {
@@ -296,13 +296,13 @@ class ETAInvoiceExporter {
   
   async loadInvoiceData() {
     try {
-      this.showStatus('جاري تحميل بيانات الفواتير...', 'loading');
+      this.showStatus('جاري تحميل بيانات الفواتير بالنظام المحسن...', 'loading');
       
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       const response = await this.sendMessageWithRetry(tab.id, { action: 'getInvoiceData' });
       
       if (!response || !response.success) {
-        throw new Error('فشل في الحصول على بيانات الفواتير');
+        throw new Error('فشل في الحصول على بيانات الفواتير. يرجى التأكد من وجود فواتير في الصفحة الحالية.');
       }
       
       this.invoiceData = response.data.invoices || [];
@@ -310,12 +310,30 @@ class ETAInvoiceExporter {
       this.currentPage = response.data.currentPage || 1;
       this.totalPages = response.data.totalPages || 1;
       
+      // Validate data
+      if (this.invoiceData.length === 0) {
+        throw new Error('لم يتم العثور على فواتير في الصفحة الحالية. يرجى التأكد من تحميل الصفحة بالكامل.');
+      }
+      
+      if (this.totalCount === 0) {
+        this.totalCount = this.invoiceData.length;
+      }
+      
+      if (this.totalPages === 0) {
+        this.totalPages = 1;
+      }
+      
       this.updateUI();
-      this.showStatus('✅ تم تحميل البيانات بنجاح - جاهز للتصدير السريع!', 'success');
+      this.showStatus(`✅ تم تحميل ${this.invoiceData.length} فاتورة بنجاح - النظام المحسن جاهز للتصدير!`, 'success');
       
     } catch (error) {
       this.showStatus('خطأ في تحميل البيانات: ' + error.message, 'error');
       console.error('Load error:', error);
+      
+      // Show fallback UI even on error
+      this.elements.countInfo.innerHTML = `
+        <div style="color: #c62828;">خطأ في تحميل البيانات - يرجى إعادة تحميل الصفحة</div>
+      `;
     }
   }
   
@@ -352,15 +370,34 @@ class ETAInvoiceExporter {
   
   updateUI() {
     const currentPageCount = this.invoiceData.length;
-    this.elements.countInfo.textContent = `الصفحة الحالية: ${currentPageCount} فاتورة | المجموع: ${this.totalCount} فاتورة`;
+    
+    // Update main count info
+    this.elements.countInfo.innerHTML = `
+      <div>تم العثور على البيانات بنجاح - النظام المحسن جاهز للتصدير</div>
+    `;
+    
+    // Update detailed count information
+    const countDetails = document.getElementById('countDetails');
+    if (countDetails) {
+      countDetails.style.display = 'grid';
+      
+      document.getElementById('currentPageCount').textContent = currentPageCount;
+      document.getElementById('totalInvoicesCount').textContent = this.totalCount;
+      document.getElementById('currentPageNumber').textContent = this.currentPage;
+      document.getElementById('totalPagesCount').textContent = this.totalPages;
+    }
     
     if (this.elements.totalCountText) {
       this.elements.totalCountText.textContent = this.totalCount;
     }
     
+    if (document.getElementById('totalPagesText')) {
+      document.getElementById('totalPagesText').textContent = this.totalPages;
+    }
+    
     const downloadAllLabel = this.elements.checkboxes.downloadAll?.parentElement.querySelector('label');
     if (downloadAllLabel) {
-      downloadAllLabel.innerHTML = `⚡ تحميل جميع الصفحات بسرعة عالية - <span id="totalCountText">${this.totalCount}</span> فاتورة (${this.totalPages} صفحة)`;
+      downloadAllLabel.innerHTML = `⚡ تحميل جميع الصفحات بسرعة محسنة - <span id="totalCountText">${this.totalCount}</span> فاتورة (<span id="totalPagesText">${this.totalPages}</span> صفحة)`;
     }
   }
   
@@ -436,7 +473,7 @@ class ETAInvoiceExporter {
   
   async exportAllPages(format, options) {
     this.showProgress();
-    this.showStatus('⚡ جاري التحميل السريع لجميع الصفحات...', 'loading');
+    this.showStatus('⚡ جاري التحميل المحسن لجميع الصفحات...', 'loading');
     
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     
@@ -446,16 +483,21 @@ class ETAInvoiceExporter {
     });
     
     if (!allData || !allData.success) {
-      throw new Error('فشل في تحميل جميع الصفحات: ' + (allData?.error || 'خطأ غير معروف'));
+      throw new Error('فشل في تحميل جميع الصفحات بالنظام المحسن: ' + (allData?.error || 'خطأ غير معروف'));
     }
     
     let dataToExport = allData.data;
+    
+    // Validate loaded data
+    if (!dataToExport || dataToExport.length === 0) {
+      throw new Error('لم يتم تحميل أي بيانات من الصفحات. يرجى التأكد من وجود فواتير والمحاولة مرة أخرى.');
+    }
     
     if (options.downloadDetails && dataToExport.length > 0) {
       this.updateProgress({
         currentPage: this.totalPages,
         totalPages: this.totalPages,
-        message: 'جاري تحميل تفاصيل جميع الفواتير...'
+        message: 'جاري تحميل تفاصيل جميع الفواتير بالنظام المحسن...'
       });
       
       dataToExport = await this.loadInvoiceDetails(dataToExport, tab.id);
@@ -464,11 +506,11 @@ class ETAInvoiceExporter {
     this.updateProgress({
       currentPage: this.totalPages,
       totalPages: this.totalPages,
-      message: 'جاري إنشاء الملف...'
+      message: 'جاري إنشاء الملف بالتنسيق المطلوب...'
     });
     
     await this.generateFile(dataToExport, format, options);
-    this.showStatus(`🚀 تم تصدير ${dataToExport.length} فاتورة من جميع الصفحات بسرعة عالية!`, 'success');
+    this.showStatus(`🚀 تم تصدير ${dataToExport.length} فاتورة من جميع الصفحات بالنظام المحسن بنجاح!`, 'success');
   }
   
   showProgress() {
@@ -493,7 +535,7 @@ class ETAInvoiceExporter {
     }
     
     if (this.elements.progressText) {
-      this.elements.progressText.textContent = progress.message || `الصفحة ${progress.currentPage} من ${progress.totalPages} (${Math.round(percentage)}%)`;
+      this.elements.progressText.textContent = progress.message || `تم تحميل ${progress.currentPage} من ${progress.totalPages} صفحة (${Math.round(percentage)}%)`;
     }
   }
   
